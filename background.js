@@ -1,17 +1,16 @@
 let startTime = {};
+let activeTabId = null;
 let siteData = {};
+let visitRecords = [];
 let dailyStats = {
   date: new Date().toDateString(),
   chromeOpenCount: 0,
   totalChromeTime: 0,
   chromeStartTime: null,
   aiSummary: null,
-  summaryGeneratedTime: null
+  summaryGeneratedTime: null,
+  totalVisits: 0
 };
-let activeTabId = null;
-
-// 添加访问记录数组
-let visitRecords = [];
 
 // 使用普通方式导入配置，不使用 ES modules
 const AI_CONFIG = {
@@ -49,94 +48,253 @@ function checkContentSafety(url, title) {
 async function analyzeWithAI(data) {
   try {
     console.log('开始调用 AI 分析...');
+    
+    // 构建请求体
+    const requestBody = {
+      model: "glm-4",  // 使用 glm-4 模型
+      messages: [{
+        role: "system",
+        content: "你是一个专业的网络行为分析师，负责分析用户的浏览数据并提供专业的建议。"
+      }, {
+        role: "user",
+        content: data
+      }],
+      temperature: 0.7,
+      top_p: 0.7,
+      stream: false
+    };
+
+    console.log('请求体:', requestBody);
+
     const response = await fetch(AI_CONFIG.endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${AI_CONFIG.apiKey}`
       },
-      body: JSON.stringify({
-        model: "chatglm_turbo",
-        messages: [{
-          role: "system",
-          content: `作为专业的网络行为分析师，请对用户的浏览数据进行分析。
-重点关注以下方面：
-1. 工作效率：分析工作相关网站的访问情况
-2. 学习情况：评估教育和学习资源的使用
-3. 时间管理：分析时间分配的合理性
-4. 数字健康：评估上网时间和行为是否健康
-5. 安全建议：检查是否访问了不安全或不当网站
-
-请提供专业的分析和建设性的建议。`
-        }, {
-          role: "user",
-          content: data
-        }],
-        temperature: 0.7,
-        request_id: Date.now().toString(),
-        stream: false
-      })
+      body: JSON.stringify(requestBody)
     });
 
     if (!response.ok) {
       const errorText = await response.text();
       console.error('AI API 响应错误:', errorText);
-      throw new Error(`API request failed: ${response.status} - ${errorText}`);
+      throw new Error(`API 请求失败: ${response.status} - ${errorText}`);
     }
 
     const result = await response.json();
-    console.log('AI 响应:', result);
+    console.log('AI 原始响应:', result);
 
-    if (result.data && result.data.choices && result.data.choices[0]) {
+    // 智谱 AI 的响应格式处理
+    if (result && result.data && result.data.choices && result.data.choices[0]) {
       return result.data.choices[0].content;
-    } else {
-      throw new Error('Invalid response format from AI service');
+    } else if (result && result.choices && result.choices[0] && result.choices[0].message) {
+      return result.choices[0].message.content;
     }
+    
+    console.error('无效的响应格式:', result);
+    throw new Error('AI 服务返回了无效的响应格式');
   } catch (error) {
     console.error('AI 分析失败:', error);
+    throw new Error(`AI 分析失败: ${error.message}`);
+  }
+}
+
+// 保存数据到 storage
+async function saveData(newSiteData, newVisitRecords, newDailyStats) {
+  try {
+    // 更新内存中的数据
+    if (newSiteData) siteData = newSiteData;
+    if (newVisitRecords) visitRecords = newVisitRecords;
+    if (newDailyStats) dailyStats = newDailyStats;
+
+    // 保存数据到 storage
+    const data = {
+      savedSiteData: siteData,
+      savedVisitRecords: visitRecords,
+      savedDailyStats: dailyStats,
+      lastSaveTime: Date.now()
+    };
+
+    await chrome.storage.local.set(data);
+    console.log('数据已保存:', data);
+  } catch (error) {
+    console.error('保存数据失败:', error);
     throw error;
+  }
+}
+
+// 添加重置数据的函数
+async function resetData() {
+  await saveData({}, [], null, true);
+}
+
+// 从 storage 加载数据
+async function loadData() {
+  try {
+    const {
+      savedSiteData,
+      savedVisitRecords,
+      savedDailyStats,
+      lastSaveTime
+    } = await chrome.storage.local.get([
+      'savedSiteData',
+      'savedVisitRecords',
+      'savedDailyStats',
+      'lastSaveTime'
+    ]);
+
+    // 如果是新的一天，重置数据
+    const today = new Date().toDateString();
+    const lastSaveDay = lastSaveTime ? new Date(lastSaveTime).toDateString() : null;
+
+    if (today !== lastSaveDay) {
+      console.log('新的一天，重置数据');
+      const newData = {
+        siteData: {},
+        visitRecords: [],
+        dailyStats: {
+          chromeOpenCount: 0,
+          totalChromeTime: 0,
+          totalVisits: 0,
+          date: today
+        }
+      };
+      await saveData(newData.siteData, newData.visitRecords, newData.dailyStats);
+      return newData;
+    }
+
+    // 使用存储中的数据，如果不存在则使用空数据
+    return {
+      siteData: savedSiteData || {},
+      visitRecords: savedVisitRecords || [],
+      dailyStats: savedDailyStats || {
+        chromeOpenCount: 0,
+        totalChromeTime: 0,
+        totalVisits: 0,
+        date: today
+      }
+    };
+  } catch (error) {
+    console.error('加载数据失败:', error);
+    return {
+      siteData: {},
+      visitRecords: [],
+      dailyStats: {
+        chromeOpenCount: 0,
+        totalChromeTime: 0,
+        totalVisits: 0,
+        date: new Date().toDateString()
+      }
+    };
   }
 }
 
 // 初始化数据
 async function initializeData() {
   try {
-    console.log('初始化数据...');
-    const { savedSiteData, savedDailyStats, savedVisitRecords } = 
-      await chrome.storage.local.get(['savedSiteData', 'savedDailyStats', 'savedVisitRecords']);
+    console.log('开始初始化数据...');
     
+    // 获取当前日期
     const today = new Date().toDateString();
     
-    if (savedDailyStats && savedDailyStats.date === today) {
-      console.log('加载今天的数据');
-      dailyStats = savedDailyStats;
-      siteData = savedSiteData || {};
-      visitRecords = savedVisitRecords || [];
-    } else {
-      console.log('创建新的一天的数据');
+    // 从 storage 加载数据
+    const { savedSiteData, savedVisitRecords, savedDailyStats, lastSaveTime } = 
+      await chrome.storage.local.get(['savedSiteData', 'savedVisitRecords', 'savedDailyStats', 'lastSaveTime']);
+    
+    // 检查是否是新的一天
+    const lastSaveDay = lastSaveTime ? new Date(lastSaveTime).toDateString() : null;
+    
+    if (today !== lastSaveDay) {
+      console.log('新的一天，重置数据');
+      // 新的一天，重置数据
+      siteData = {};
+      visitRecords = [];
       dailyStats = {
         date: today,
         chromeOpenCount: 1,
         totalChromeTime: 0,
         chromeStartTime: Date.now(),
         aiSummary: null,
-        summaryGeneratedTime: null
+        summaryGeneratedTime: null,
+        totalVisits: 0
       };
-      siteData = {};
-      visitRecords = [];
+    } else {
+      console.log('使用已保存的数据');
+      // 使用已保存的数据
+      siteData = savedSiteData || {};
+      visitRecords = savedVisitRecords || [];
+      dailyStats = savedDailyStats || {
+        date: today,
+        chromeOpenCount: 1,
+        totalChromeTime: 0,
+        chromeStartTime: Date.now(),
+        aiSummary: null,
+        summaryGeneratedTime: null,
+        totalVisits: 0
+      };
+      
+      // 增加 Chrome 启动次数
+      dailyStats.chromeOpenCount++;
     }
-
-    console.log('初始化后的数据:', {
-      dailyStats,
+    
+    // 设置 Chrome 开始时间
+    dailyStats.chromeStartTime = Date.now();
+    
+    // 保存初始化后的数据
+    await saveData(siteData, visitRecords, dailyStats);
+    
+    console.log('数据初始化完成:', {
       siteData,
-      visitRecords
+      visitRecords,
+      dailyStats,
+      today,
+      lastSaveDay
     });
   } catch (error) {
     console.error('初始化数据失败:', error);
   }
 }
 
-// 添加历史数据保存功能
+// 定期保存数据（每分钟）
+setInterval(() => {
+  saveData(siteData, visitRecords, dailyStats);
+}, 60000);
+
+// 在接收到删除消息时更新数据
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message.type === 'DATA_UPDATED') {
+    console.log('收到数据更新消息:', message.data);
+    
+    // 立即保存更新后的数据
+    saveData(
+      message.data.savedSiteData,
+      message.data.savedVisitRecords,
+      message.data.savedDailyStats,
+      true  // 强制重置
+    ).then(() => {
+      sendResponse({ success: true });
+    }).catch(error => {
+      console.error('更新数据失败:', error);
+      sendResponse({ success: false, error: error.message });
+    });
+    
+    return true;
+  } else if (message.type === 'RESET_DATA') {
+    resetData().then(() => {
+      sendResponse({ success: true });
+    }).catch(error => {
+      sendResponse({ success: false, error: error.message });
+    });
+    return true;
+  }
+});
+
+// 在扩展关闭前保存数据
+chrome.runtime.onSuspend.addListener(() => {
+  saveData(siteData, visitRecords, dailyStats);
+});
+
+// 添加历史据保存功能
 async function saveHistoricalData(stats, sites) {
   try {
     const { history = [] } = await chrome.storage.local.get('history');
@@ -211,7 +369,7 @@ setInterval(async () => {
           await updateSiteTime(activeTabId, url.hostname);
         }
       } catch (error) {
-        // 标签页不存在，清理相关数据
+        // 标签��不存在，清理相关���据
         if (error.message.includes('No tab with id')) {
           delete startTime[activeTabId];
           activeTabId = null;
@@ -227,46 +385,19 @@ setInterval(async () => {
   }
 }, 5000); // 每5秒更新一次
 
-// 保存数据
-async function saveData() {
-  try {
-    const dataToSave = {
-      savedSiteData: siteData,
-      savedDailyStats: dailyStats,
-      savedVisitRecords: visitRecords
-    };
-    
-    await chrome.storage.local.set(dataToSave);
-    console.log('数据保存成功:', dataToSave);
-    
-    // 尝试通知 popup 更新
-    notifyPopups(dataToSave);
-  } catch (error) {
-    console.error('保存数据失败:', error);
-  }
-}
-
 // 添加单独的通知函数
 async function notifyPopups(data) {
   try {
-    // 检查是否有活动的 popup
-    const views = await chrome.extension.getViews({ type: 'popup' });
+    const views = chrome.extension.getViews({ type: 'popup' });
     if (views && views.length > 0) {
-      await chrome.runtime.sendMessage({
-        type: 'UPDATE_STATS',
-        data: {
-          siteData: data.savedSiteData,
-          dailyStats: data.savedDailyStats,
-          visitRecords: data.savedVisitRecords
+      for (const view of views) {
+        if (view.updateDisplay) {
+          view.updateDisplay(data);
         }
-      });
+      }
     }
   } catch (error) {
-    // 忽略 popup 未打开时的连接错误
-    if (!error.message.includes('receiving end does not exist') &&
-        !error.message.includes('Could not establish connection')) {
-      console.error('发送更新消息失败:', error);
-    }
+    console.error('通知 popup 失败:', error);
   }
 }
 
@@ -290,7 +421,7 @@ async function recoverData() {
 // 发送更新消息给所有popup页面
 async function notifyPopups() {
   try {
-    // 直接发送消息，让 popup 自己处理
+    // 直接发送消息， popup 自己处理
     await chrome.runtime.sendMessage({
       type: 'UPDATE_STATS',
       data: {
@@ -389,141 +520,229 @@ chrome.runtime.onConnect.addListener(function(port) {
   });
 });
 
-// 监听一次性消息
+// 添加 IndexedDB 数据库操作
+const DB_NAME = 'BrowsingAnalyticsDB';
+const DB_VERSION = 1;
+const STORE_NAME = 'aiSummaries';
+
+// 初始化数据库
+async function initDB() {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    
+    request.onerror = () => reject(request.error);
+    
+    request.onsuccess = () => resolve(request.result);
+    
+    request.onupgradeneeded = (event) => {
+      const db = event.target.result;
+      
+      // 创建存储 AI 总结的对象仓库
+      if (!db.objectStoreNames.contains(STORE_NAME)) {
+        const store = db.createObjectStore(STORE_NAME, { keyPath: 'date' });
+        store.createIndex('generateTime', 'generateTime');
+      }
+    };
+  });
+}
+
+// 保存 AI 总结到 IndexedDB
+async function saveAISummary(summary) {
+  try {
+    const db = await initDB();
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const store = tx.objectStore(STORE_NAME);
+    
+    const summaryData = {
+      date: new Date().toDateString(),
+      content: summary,
+      generateTime: Date.now(),
+      siteData: siteData,
+      dailyStats: dailyStats
+    };
+    
+    await store.put(summaryData);
+    console.log('AI 总结已保存到数据库');
+    
+    return summaryData;
+  } catch (error) {
+    console.error('保存 AI 总结失败:', error);
+    throw error;
+  }
+}
+
+// 获取今日的 AI 总结
+async function getTodayAISummary() {
+  try {
+    const db = await initDB();
+    const tx = db.transaction(STORE_NAME, 'readonly');
+    const store = tx.objectStore(STORE_NAME);
+    
+    const today = new Date().toDateString();
+    const request = store.get(today);
+    
+    return new Promise((resolve, reject) => {
+      request.onsuccess = () => resolve(request.result);
+      request.onerror = () => reject(request.error);
+    });
+  } catch (error) {
+    console.error('获取 AI 总结失败:', error);
+    throw error;
+  }
+}
+
+// 修改消息监听器
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  console.log("收到消息:", request);
-  
   if (request.action === "generateSummary") {
-    (async () => {
+    // 使用 Promise.resolve().then() 来处理异步操作
+    Promise.resolve().then(async () => {
       try {
-        // 获取浏览数据
-        const { savedSiteData, savedDailyStats } = await chrome.storage.local.get(['savedSiteData', 'savedDailyStats']);
+        console.log('开始生成总结...');
         
-        // 格式化数据用于 AI 分析
-        let analysisData = "请根据我今的浏览网页的数据，分析我今天工作做了什么，学了什么，做了什么不正确的事情，健康习惯分析。\n\n";
-        analysisData += formatBrowsingDataForAI(savedSiteData, savedDailyStats);
+        // 获取当前内存中的数据
+        if (!siteData || Object.keys(siteData).length === 0) {
+          throw new Error('没有可用的浏览数据');
+        }
+        
+        // 格式化数据
+        const analysisData = formatBrowsingDataForAI(siteData, dailyStats);
+        console.log('发送给 AI 的数据:', analysisData);
         
         // 调用 AI 分析
         const aiSummary = await analyzeWithAI(analysisData);
+        console.log('AI 分析结果:', aiSummary);
         
-        // 保存 AI 总结
+        // 保存到 storage
+        const summaryData = {
+          content: aiSummary,
+          generateTime: Date.now(),
+          date: new Date().toDateString()
+        };
+        
+        await chrome.storage.local.set({ aiSummary: summaryData });
+        
+        // 更新 dailyStats
         dailyStats.aiSummary = aiSummary;
-        dailyStats.summaryGeneratedTime = Date.now();
-        await saveData();
+        dailyStats.summaryGeneratedTime = summaryData.generateTime;
         
+        // 保存更新后的数据
+        await saveData(siteData, visitRecords, dailyStats);
+        
+        // 返回结果
         sendResponse({
           success: true,
           summary: aiSummary
         });
       } catch (error) {
-        console.error('Generate summary failed:', error);
+        console.error('生成总结失败:', error);
         sendResponse({
           success: false,
           error: error.message
         });
       }
-    })();
+    });
+    
+    return true; // 保持消息通道开启
+  } else if (request.action === "getTodayAISummary") {
+    Promise.resolve().then(async () => {
+      try {
+        const { aiSummary } = await chrome.storage.local.get('aiSummary');
+        if (aiSummary && aiSummary.date === new Date().toDateString()) {
+          sendResponse({
+            success: true,
+            summary: aiSummary
+          });
+        } else {
+          sendResponse({
+            success: false,
+            error: '没有今日的 AI 总结'
+          });
+        }
+      } catch (error) {
+        console.error('获取 AI 总结失败:', error);
+        sendResponse({
+          success: false,
+          error: error.message
+        });
+      }
+    });
+    
+    return true; // 保持消息通道开启
+  } else if (request.type === 'DATA_UPDATED') {
+    Promise.resolve().then(async () => {
+      try {
+        await saveData(
+          request.data.savedSiteData,
+          request.data.savedVisitRecords,
+          request.data.savedDailyStats
+        );
+        sendResponse({ success: true });
+      } catch (error) {
+        console.error('更新数据失败:', error);
+        sendResponse({ success: false, error: error.message });
+      }
+    });
+    
     return true; // 保持消息通道开启
   }
   
-  // 处理其他类型的消息
-  sendResponse({status: "received"});
-  return true;
+  return false;
 });
 
-// 添加数据格式化函数
+// 修改格式化数据的函数
 function formatBrowsingDataForAI(siteData, dailyStats) {
-  let formattedData = "📊 浏览数据统计：\n\n";
+  let formattedData = "请分析以下今日的浏览数据，给出具体的分析和建议：\n\n";
   
   // 基础统计
-  formattedData += `总访问网站数：${Object.keys(siteData).length}\n`;
-  formattedData += `Chrome使用时间：${Math.round(dailyStats.totalChromeTime / 60)}分钟\n\n`;
+  formattedData += "基础数据：\n";
+  formattedData += `- 访问网站数：${Object.keys(siteData).length}个\n`;
+  formattedData += `- Chrome使用时长：${Math.round(dailyStats.totalChromeTime / 60)}分钟\n`;
+  formattedData += `- Chrome启动次数：${dailyStats.chromeOpenCount}次\n\n`;
   
   // 详细访问记录
-  formattedData += "详细访问记录：\n";
+  formattedData += "访问详情：\n";
   Object.entries(siteData)
     .sort((a, b) => b[1].totalTime - a[1].totalTime)
     .forEach(([domain, data]) => {
       const minutes = Math.round(data.totalTime / 1000 / 60);
-      formattedData += `\n${data.title || domain}\n`;
-      formattedData += `• 访问次数：${data.visits}次\n`;
-      formattedData += `• 停留时间：${minutes}分钟\n`;
-      formattedData += `• 域名：${domain}\n`;
+      formattedData += `\n网站：${data.title || domain}\n`;
+      formattedData += `访问：${data.visits}次，时长：${minutes}分钟\n`;
     });
+
+  formattedData += "\n请分析：\n";
+  formattedData += "1. 工作效率情况\n";
+  formattedData += "2. 时间分配合理性\n";
+  formattedData += "3. 使用习惯建议\n";
   
   return formattedData;
 }
 
-// 修改 generateDailySummary 函数
+// 修改生成总结的处理函数
 async function generateDailySummary() {
   try {
-    console.log("正在生成总结，当前数据:", { siteData, dailyStats });
+    console.log("开始生成总结，当前数据:", { siteData, dailyStats });
     
     if (!siteData || Object.keys(siteData).length === 0) {
       throw new Error('没有可用的浏览数据');
     }
 
-    const prompt = formatBrowsingData(siteData, dailyStats, visitRecords);
+    const prompt = formatBrowsingDataForAI(siteData, dailyStats);
     console.log('发送给 AI 的数据:', prompt);
 
-    try {
-      const summary = await analyzeWithAI(prompt);
-      console.log('AI 分析结果:', summary);
+    const summary = await analyzeWithAI(prompt);
+    console.log('AI 分析结果:', summary);
 
-      // 更新 dailyStats
-      dailyStats.aiSummary = summary;
-      dailyStats.summaryGeneratedTime = Date.now();
-      
-      // 保存更新后的数据
-      await saveData();
-      
-      return summary;
-    } catch (aiError) {
-      console.error('AI 分析出错:', aiError);
-      throw new Error('AI 分析失败: ' + aiError.message);
-    }
+    // 保存 AI 总结
+    dailyStats.aiSummary = summary;
+    dailyStats.summaryGeneratedTime = Date.now();
+    
+    await saveData(siteData, visitRecords, dailyStats);
+    
+    return summary;
   } catch (error) {
-    console.error('生成总结时出错:', error);
+    console.error('生成总结失败:', error);
     throw error;
   }
-}
-
-// 修改数据格式化部分
-function formatBrowsingData(siteData, dailyStats, visitRecords) {
-  let prompt = "请分析以下网络浏览数据，重点关注数字健康和网络安全：\n\n";
-  
-  // 添加基础统计
-  prompt += "📊 基础统计：\n";
-  prompt += `• 访问网站数：${Object.keys(siteData).length}\n`;
-  const totalVisits = Object.values(siteData).reduce((sum, site) => sum + site.visits, 0);
-  prompt += `• 总访问次数：${totalVisits}\n`;
-  prompt += `• Chrome启动次数：${dailyStats.chromeOpenCount}\n`;
-  prompt += `• 总使用时间：${Math.round(dailyStats.totalChromeTime / 60)}分钟\n\n`;
-
-  // 检查网站安全性
-  const unsafeVisits = visitRecords.filter(record => 
-    checkContentSafety(record.url, record.title)
-  );
-
-  if (unsafeVisits.length > 0) {
-    prompt += "⚠️ 安全提示：\n";
-    prompt += `发现 ${unsafeVisits.length} 次可能的不安全网站访问。\n\n`;
-  }
-
-  // 添加详细访问记录
-  prompt += "🔍 详细访问记录：\n";
-  visitRecords.forEach(record => {
-    const minutes = Math.round(record.duration / 1000 / 60);
-    const time = new Date(record.timestamp).toLocaleTimeString();
-    prompt += `\n${record.title || record.url}\n`;
-    prompt += `• 访问时间：${time}\n`;
-    prompt += `• 停留时间：${minutes}分钟\n`;
-    if (checkContentSafety(record.url, record.title)) {
-      prompt += `• 注意：该网站可能存在安全风险\n`;
-    }
-  });
-
-  return prompt;
 }
 
 // 添加获取主域名的函数
@@ -562,7 +781,6 @@ async function addVisitRecord(tab) {
     };
     
     visitRecords.push(record);
-    console.log('添加新的访问记录:', record);
 
     // 更新网站数据
     if (!siteData[domain]) {
@@ -578,7 +796,10 @@ async function addVisitRecord(tab) {
     siteData[domain].lastVisit = timestamp;
     siteData[domain].title = tab.title;
 
-    await saveData();
+    // 使用新的 saveData 函数保存数据
+    await saveData(siteData, visitRecords, dailyStats);
+    
+    console.log('添加新的访问记录:', record);
   } catch (error) {
     console.error('添加访问记录失败:', error);
   }
