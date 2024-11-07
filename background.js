@@ -10,8 +10,11 @@ let dailyStats = {
 };
 let activeTabId = null;
 
-// 导入配置
-import AI_CONFIG from './config.js';
+// 使用普通方式导入配置，不使用 ES modules
+const AI_CONFIG = {
+  endpoint: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
+  apiKey: "d9965556e819c33bc892623f62199404.kfZMM04pLZ5Azb1R"
+};
 
 // 添加 API Key 配置函数
 async function setApiKey(key) {
@@ -27,48 +30,68 @@ async function getApiKey() {
 // 修改 AI 分析函数
 async function analyzeWithAI(data) {
   try {
-    const apiKey = await getApiKey();
-    if (!apiKey) {
-      throw new Error('请先配置智谱 AI 的 API Key');
-    }
-
+    console.log('开始调用 AI 分析...');
     const response = await fetch(AI_CONFIG.endpoint, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${apiKey}`
+        'Authorization': `Bearer ${AI_CONFIG.apiKey}`
       },
       body: JSON.stringify({
-        model: "glm-4",
+        model: "chatglm_turbo",
         messages: [{
           role: "system",
-          content: "你是一个专业的浏览行为分析师，负责分析用户的网页浏览数据，并提供专业的建议。请从工作效率、学习收获、健康习惯等方面进行分析。"
+          content: `你是一个专业的浏览行为分析师，请根据用户的浏览数据进行分析。
+分析维度包括：
+1. 工作内容：根据访问的网站推测今天的工作内容
+2. 学习收获：分析是否访问了学习相关网站，学到了什么
+3. 时间管理：分析时间分配是否合理
+4. 健康建议：根据使用时长和时间分布给出健康建议
+请用简洁专业的语言进行分析，给出具体的改进建议。`
         }, {
           role: "user",
           content: data
         }],
         temperature: 0.7,
-        top_p: 0.9,
-        max_tokens: 2000,
+        request_id: Date.now().toString(),
         stream: false
       })
     });
 
     if (!response.ok) {
       const errorText = await response.text();
+      console.error('AI API 响应错误:', errorText);
       throw new Error(`API request failed: ${response.status} - ${errorText}`);
     }
 
-    const result = await response.json();
-    console.log('AI Response:', result);
+    const responseText = await response.text();
+    console.log('原始响应:', responseText);
 
-    if (result.choices && result.choices[0] && result.choices[0].message) {
-      return result.choices[0].message.content;
-    } else {
-      throw new Error('Invalid response format from AI service');
+    try {
+      const result = JSON.parse(responseText);
+      console.log('解析后的响应:', result);
+
+      // 处理不同的响应格式
+      if (result.data && result.data.choices && result.data.choices[0]) {
+        return result.data.choices[0].content;
+      } else if (result.choices && result.choices[0]) {
+        if (result.choices[0].message) {
+          return result.choices[0].message.content;
+        }
+        return result.choices[0].content;
+      } else if (result.response) {
+        return result.response;
+      } else {
+        console.error('无法解析的响应格式:', result);
+        throw new Error('无法识别的 AI 响应格式');
+      }
+    } catch (parseError) {
+      console.error('解析响应时出错:', parseError);
+      console.error('原始响应内容:', responseText);
+      throw new Error('解析 AI 响应失败: ' + parseError.message);
     }
   } catch (error) {
-    console.error('AI analysis failed:', error);
+    console.error('AI 分析失败:', error);
     throw error;
   }
 }
@@ -386,7 +409,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         const { savedSiteData, savedDailyStats } = await chrome.storage.local.get(['savedSiteData', 'savedDailyStats']);
         
         // 格式化数据用于 AI 分析
-        let analysisData = "请根据我今天的浏览网页的数据，分析我今天工作做了什么，学了什么，做了什么不正确的事情，健康习惯分析。\n\n";
+        let analysisData = "请根据我今的浏览网页的数据，分析我今天工作做了什么，学了什么，做了什么不正确的事情，健康习惯分析。\n\n";
         analysisData += formatBrowsingDataForAI(savedSiteData, savedDailyStats);
         
         // 调用 AI 分析
@@ -449,44 +472,75 @@ async function generateDailySummary() {
       throw new Error('没有可用的浏览数据');
     }
 
-    // 准备发送给 AI 的数据
-    let prompt = "请根据我今天的浏览网页的数据，分析我今天工作做了什么，学了什么，做了什么不正确的事情，健康习惯分析。\n\n";
-    
-    // ��加基础统计
-    prompt += "基础统计：\n";
-    prompt += `• 访问网站数：${Object.keys(siteData).length}\n`;
-    const totalVisits = Object.values(siteData).reduce((sum, site) => sum + site.visits, 0);
-    prompt += `• 总访问次数：${totalVisits}\n`;
-    prompt += `• Chrome启动次数：${dailyStats.chromeOpenCount}\n`;
-    prompt += `• 总使用时间：${Math.round(dailyStats.totalChromeTime / 60)}分钟\n\n`;
+    const prompt = formatBrowsingData(siteData, dailyStats);
+    console.log('发送给 AI 的数据:', prompt);
 
-    // 添加详细访问数据
-    prompt += "详细访问记录：\n";
-    Object.entries(siteData)
-      .sort((a, b) => b[1].totalTime - a[1].totalTime)
-      .forEach(([domain, data]) => {
-        const minutes = Math.round(data.totalTime / 1000 / 60);
-        prompt += `\n${data.title || domain}\n`;
-        prompt += `• 访问次数：${data.visits}次\n`;
-        prompt += `• 停留时间：${minutes}分钟\n`;
-        prompt += `• 域名：${domain}\n`;
-      });
+    try {
+      const summary = await analyzeWithAI(prompt);
+      console.log('AI 分析结果:', summary);
 
-    // 调用智谱 AI 进行分析
-    const summary = await analyzeWithAI(prompt);
-
-    // 更新 dailyStats
-    dailyStats.aiSummary = summary;
-    dailyStats.summaryGeneratedTime = Date.now();
-    
-    // 保存更新后的数据
-    await saveData();
-    
-    console.log("AI 总结生成完成:", summary);
-    return summary;
-
+      // 更新 dailyStats
+      dailyStats.aiSummary = summary;
+      dailyStats.summaryGeneratedTime = Date.now();
+      
+      // 保存更新后的数据
+      await saveData();
+      
+      return summary;
+    } catch (aiError) {
+      console.error('AI 分析出错:', aiError);
+      throw new Error('AI 分析失败: ' + aiError.message);
+    }
   } catch (error) {
     console.error('生成总结时出错:', error);
     throw error;
   }
+}
+
+// 修改数据格式化部分
+function formatBrowsingData(siteData, dailyStats) {
+  let prompt = "请分析以下浏览数据，从工作内容、学习收获、时间管理和健康习惯等方面给出专业建议：\n\n";
+  
+  // 添加基础统计
+  prompt += "📊 基础统计：\n";
+  prompt += `• 访问网站数：${Object.keys(siteData).length}\n`;
+  const totalVisits = Object.values(siteData).reduce((sum, site) => sum + site.visits, 0);
+  prompt += `• 总访问次数：${totalVisits}\n`;
+  prompt += `• Chrome启动次数：${dailyStats.chromeOpenCount}\n`;
+  prompt += `• 总使用时间：${Math.round(dailyStats.totalChromeTime / 60)}分钟\n\n`;
+
+  // 添加详细访问数据
+  prompt += "🔍 详细访问记录：\n";
+  Object.entries(siteData)
+    .sort((a, b) => b[1].totalTime - a[1].totalTime)
+    .forEach(([domain, data]) => {
+      const minutes = Math.round(data.totalTime / 1000 / 60);
+      const lastVisitTime = new Date(data.lastVisit).toLocaleTimeString();
+      prompt += `\n${data.title || domain}\n`;
+      prompt += `• 访问次数：${data.visits}次\n`;
+      prompt += `• 停留时间：${minutes}分钟\n`;
+      prompt += `• 最后访问：${lastVisitTime}\n`;
+      prompt += `• 域名：${domain}\n`;
+    });
+
+  // 添加时间分布分析
+  prompt += "\n⏰ 时间分布分析：\n";
+  const timeDistribution = {
+    morning: 0,   // 5:00-12:00
+    afternoon: 0, // 12:00-18:00
+    evening: 0    // 18:00-次日5:00
+  };
+
+  Object.values(siteData).forEach(data => {
+    const hour = new Date(data.lastVisit).getHours();
+    if (hour >= 5 && hour < 12) timeDistribution.morning++;
+    else if (hour >= 12 && hour < 18) timeDistribution.afternoon++;
+    else timeDistribution.evening++;
+  });
+
+  prompt += `• 上午 (5:00-12:00): ${timeDistribution.morning} 次访问\n`;
+  prompt += `• 下午 (12:00-18:00): ${timeDistribution.afternoon} 次访问\n`;
+  prompt += `• 晚上 (18:00-次日5:00): ${timeDistribution.evening} 次访问\n`;
+
+  return prompt;
 }

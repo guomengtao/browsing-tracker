@@ -4,75 +4,138 @@ let isGeneratingSummary = false;
 // 初始化 popup
 document.addEventListener('DOMContentLoaded', async () => {
   try {
-    // 获取当前数据
+    console.log('Popup 页面加载...');
+    // 获取存储的数据
     const { savedSiteData, savedDailyStats } = await chrome.storage.local.get(['savedSiteData', 'savedDailyStats']);
-    updateUI(savedSiteData, savedDailyStats);
+    console.log('获取到的数据:', { savedSiteData, savedDailyStats });
+
+    // 更新基础统计信息
+    updateBasicStats(savedSiteData, savedDailyStats);
     
-    // 监听来自 background 的更新消息
-    chrome.runtime.onMessage.addListener((message) => {
-      if (message.type === 'UPDATE_STATS') {
-        updateUI(message.data.siteData, message.data.dailyStats);
-      }
-    });
-    
+    // 更新网站列表
+    updateSiteLists(savedSiteData);
+
+    // 绑定排序按钮事件
+    bindSortButtons(savedSiteData);
+
     // 绑定生成总结按钮事件
     document.getElementById('generateSummary')?.addEventListener('click', generateSummary);
     
-    // 添加复制数据按钮事件
+    // 绑定复制数据按钮事件
     document.getElementById('copyData')?.addEventListener('click', copyBrowsingData);
-    
+
+    // 监听来自 background 的更新消息
+    chrome.runtime.onMessage.addListener((message) => {
+      if (message.type === 'UPDATE_STATS') {
+        updateBasicStats(message.data.siteData, message.data.dailyStats);
+        updateSiteLists(message.data.siteData);
+      }
+    });
+
   } catch (error) {
-    console.error('Error initializing popup:', error);
+    console.error('Popup 初始化错误:', error);
   }
 });
 
-function updateUI(siteData, dailyStats) {
-  try {
-    if (!siteData || !dailyStats) return;
-    
-    // 更新基础统计信息
-    document.getElementById('uniqueSites').textContent = Object.keys(siteData).length;
-    document.getElementById('totalVisits').textContent = 
-      Object.values(siteData).reduce((sum, site) => sum + site.visits, 0);
-    document.getElementById('chromeOpenCount').textContent = dailyStats.chromeOpenCount;
-    document.getElementById('totalChromeTime').textContent = 
-      Math.round(dailyStats.totalChromeTime / 60) + '分钟';
-      
-    // 更新网站列表
-    updateSiteLists(siteData);
-    
-  } catch (error) {
-    console.error('Error updating UI:', error);
+// 更新基础统计信息
+function updateBasicStats(siteData, dailyStats) {
+  if (!siteData || !dailyStats) {
+    console.log('没有可用的统计数据');
+    return;
   }
+
+  console.log('更新基础统计:', { siteData, dailyStats });
+
+  document.getElementById('uniqueSites').textContent = Object.keys(siteData).length;
+  
+  const totalVisits = Object.values(siteData).reduce((sum, site) => sum + site.visits, 0);
+  document.getElementById('totalVisits').textContent = totalVisits;
+  
+  document.getElementById('chromeOpenCount').textContent = dailyStats.chromeOpenCount;
+  document.getElementById('totalChromeTime').textContent = 
+    Math.round(dailyStats.totalChromeTime / 60) + '分钟';
 }
 
+// 更新网站列表
 function updateSiteLists(siteData) {
+  if (!siteData) {
+    console.log('没有可用的网站数据');
+    return;
+  }
+
+  console.log('更新网站列表:', siteData);
+
   // 更新最近访问列表
   const recentList = document.getElementById('recentList');
-  const sortedRecent = Object.entries(siteData)
-    .sort((a, b) => b[1].lastVisit - a[1].lastVisit)
-    .slice(0, 5);
-    
-  recentList.innerHTML = sortedRecent
-    .map(([domain, data]) => createSiteElement(domain, data))
-    .join('');
-    
+  if (recentList) {
+    const sortedRecent = Object.entries(siteData)
+      .sort((a, b) => b[1].lastVisit - a[1].lastVisit)
+      .slice(0, 5);
+      
+    recentList.innerHTML = sortedRecent
+      .map(([domain, data]) => createSiteElement(domain, data))
+      .join('');
+  }
+
   // 更新完整列表
   updateFullList(siteData);
 }
 
+// 更新完整列表
+function updateFullList(siteData) {
+  const fullList = document.getElementById('fullList');
+  if (!fullList) return;
+
+  const activeSortButton = document.querySelector('.sort-button.active');
+  const sortType = activeSortButton ? activeSortButton.dataset.sort : 'time';
+
+  let sortedSites = Object.entries(siteData);
+
+  switch (sortType) {
+    case 'time':
+      sortedSites.sort((a, b) => b[1].lastVisit - a[1].lastVisit);
+      break;
+    case 'duration':
+      sortedSites.sort((a, b) => b[1].totalTime - a[1].totalTime);
+      break;
+    case 'visits':
+      sortedSites.sort((a, b) => b[1].visits - a[1].visits);
+      break;
+  }
+
+  fullList.innerHTML = sortedSites
+    .map(([domain, data]) => createSiteElement(domain, data))
+    .join('');
+}
+
+// 创建网站元素
 function createSiteElement(domain, data) {
   const minutes = Math.round(data.totalTime / 1000 / 60);
+  const timeAgo = Math.round((Date.now() - data.lastVisit) / 1000 / 60);
+  
   return `
     <div class="site-item">
       <div class="site-info">
         <div>${data.title || domain}</div>
         <div class="site-stats">
-          访问次数: ${data.visits} | 停留时间: ${minutes}分钟
+          访问次数: ${data.visits} | 停留时间: ${minutes}分钟 | ${timeAgo}分钟前访问
         </div>
       </div>
     </div>
   `;
+}
+
+// 绑定排序按钮事件
+function bindSortButtons(siteData) {
+  document.querySelectorAll('.sort-button').forEach(button => {
+    button.addEventListener('click', () => {
+      document.querySelectorAll('.sort-button').forEach(btn => 
+        btn.classList.remove('active')
+      );
+      button.classList.add('active');
+      updateFullList(siteData);
+    });
+  });
 }
 
 async function generateSummary() {
@@ -130,44 +193,6 @@ async function generateSummary() {
     isGeneratingSummary = false;
     generateButton.disabled = false;
   }
-}
-
-// 添加 updateFullList 函数
-function updateFullList(siteData) {
-  const fullList = document.getElementById('fullList');
-  if (!fullList) return;
-
-  // 获取当前选中的排序方式
-  const activeSortButton = document.querySelector('.sort-button.active');
-  const sortType = activeSortButton ? activeSortButton.dataset.sort : 'time';
-
-  let sortedSites = Object.entries(siteData);
-
-  // 根据不同的排序方式排序
-  switch (sortType) {
-    case 'time':
-      sortedSites.sort((a, b) => b[1].lastVisit - a[1].lastVisit);
-      break;
-    case 'duration':
-      sortedSites.sort((a, b) => b[1].totalTime - a[1].totalTime);
-      break;
-    case 'visits':
-      sortedSites.sort((a, b) => b[1].visits - a[1].visits);
-      break;
-  }
-
-  fullList.innerHTML = sortedSites
-    .map(([domain, data]) => createSiteElement(domain, data))
-    .join('');
-
-  // 绑定排序按钮事件
-  document.querySelectorAll('.sort-button').forEach(button => {
-    button.addEventListener('click', () => {
-      document.querySelectorAll('.sort-button').forEach(btn => btn.classList.remove('active'));
-      button.classList.add('active');
-      updateFullList(siteData);
-    });
-  });
 }
 
 // 修改复制数据功能
