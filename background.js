@@ -10,6 +10,9 @@ let dailyStats = {
 };
 let activeTabId = null;
 
+// 添加访问记录数组
+let visitRecords = [];
+
 // 使用普通方式导入配置，不使用 ES modules
 const AI_CONFIG = {
   endpoint: "https://open.bigmodel.cn/api/paas/v4/chat/completions",
@@ -27,6 +30,21 @@ async function getApiKey() {
   return zhipuApiKey;
 }
 
+// 修改内容检测函数，使用更专业的术语
+function checkContentSafety(url, title) {
+  // 使用更专业的关键词
+  const unsafeKeywords = [
+    'inappropriate',
+    'unsafe',
+    'restricted',
+    'nsfw',
+    'explicit'
+  ];
+
+  const content = (url + ' ' + (title || '')).toLowerCase();
+  return unsafeKeywords.some(keyword => content.includes(keyword));
+}
+
 // 修改 AI 分析函数
 async function analyzeWithAI(data) {
   try {
@@ -41,13 +59,15 @@ async function analyzeWithAI(data) {
         model: "chatglm_turbo",
         messages: [{
           role: "system",
-          content: `你是一个专业的浏览行为分析师，请根据用户的浏览数据进行分析。
-分析维度包括：
-1. 工作内容：根据访问的网站推测今天的工作内容
-2. 学习收获：分析是否访问了学习相关网站，学到了什么
-3. 时间管理：分析时间分配是否合理
-4. 健康建议：根据使用时长和时间分布给出健康建议
-请用简洁专业的语言进行分析，给出具体的改进建议。`
+          content: `作为专业的网络行为分析师，请对用户的浏览数据进行分析。
+重点关注以下方面：
+1. 工作效率：分析工作相关网站的访问情况
+2. 学习情况：评估教育和学习资源的使用
+3. 时间管理：分析时间分配的合理性
+4. 数字健康：评估上网时间和行为是否健康
+5. 安全建议：检查是否访问了不安全或不当网站
+
+请提供专业的分析和建设性的建议。`
         }, {
           role: "user",
           content: data
@@ -64,31 +84,13 @@ async function analyzeWithAI(data) {
       throw new Error(`API request failed: ${response.status} - ${errorText}`);
     }
 
-    const responseText = await response.text();
-    console.log('原始响应:', responseText);
+    const result = await response.json();
+    console.log('AI 响应:', result);
 
-    try {
-      const result = JSON.parse(responseText);
-      console.log('解析后的响应:', result);
-
-      // 处理不同的响应格式
-      if (result.data && result.data.choices && result.data.choices[0]) {
-        return result.data.choices[0].content;
-      } else if (result.choices && result.choices[0]) {
-        if (result.choices[0].message) {
-          return result.choices[0].message.content;
-        }
-        return result.choices[0].content;
-      } else if (result.response) {
-        return result.response;
-      } else {
-        console.error('无法解析的响应格式:', result);
-        throw new Error('无法识别的 AI 响应格式');
-      }
-    } catch (parseError) {
-      console.error('解析响应时出错:', parseError);
-      console.error('原始响应内容:', responseText);
-      throw new Error('解析 AI 响应失败: ' + parseError.message);
+    if (result.data && result.data.choices && result.data.choices[0]) {
+      return result.data.choices[0].content;
+    } else {
+      throw new Error('Invalid response format from AI service');
     }
   } catch (error) {
     console.error('AI 分析失败:', error);
@@ -99,19 +101,19 @@ async function analyzeWithAI(data) {
 // 初始化数据
 async function initializeData() {
   try {
-    const { savedSiteData, savedDailyStats } = await chrome.storage.local.get(['savedSiteData', 'savedDailyStats']);
+    console.log('初始化数据...');
+    const { savedSiteData, savedDailyStats, savedVisitRecords } = 
+      await chrome.storage.local.get(['savedSiteData', 'savedDailyStats', 'savedVisitRecords']);
+    
     const today = new Date().toDateString();
     
-    console.log('Loading saved data:', { savedSiteData, savedDailyStats });  // 调试日志
-    
     if (savedDailyStats && savedDailyStats.date === today) {
+      console.log('加载今天的数据');
       dailyStats = savedDailyStats;
+      siteData = savedSiteData || {};
+      visitRecords = savedVisitRecords || [];
     } else {
-      // 如果是新的一天，保存昨天的数据到历史记录
-      if (savedDailyStats && savedSiteData) {
-        await saveHistoricalData(savedDailyStats, savedSiteData);
-      }
-      
+      console.log('创建新的一天的数据');
       dailyStats = {
         date: today,
         chromeOpenCount: 1,
@@ -120,19 +122,17 @@ async function initializeData() {
         aiSummary: null,
         summaryGeneratedTime: null
       };
-    }
-    
-    // 如果是同一天，恢复网站数据
-    if (savedSiteData && savedDailyStats?.date === today) {
-      siteData = savedSiteData;
-    } else {
       siteData = {};
+      visitRecords = [];
     }
 
-    await saveData();
-    console.log('Data initialized:', { dailyStats, siteData });  // 调试日志
+    console.log('初始化后的数据:', {
+      dailyStats,
+      siteData,
+      visitRecords
+    });
   } catch (error) {
-    console.error('Error in initializeData:', error);
+    console.error('初始化数据失败:', error);
   }
 }
 
@@ -161,21 +161,40 @@ async function saveHistoricalData(stats, sites) {
 async function updateSiteTime(tabId, domain) {
   if (startTime[tabId]) {
     const duration = Date.now() - startTime[tabId];
+    
+    // 更新网站数据
     if (siteData[domain]) {
-      siteData[domain].totalTime = (siteData[domain].totalTime || 0) + duration;
+      siteData[domain].totalTime += duration;
     }
+
+    // 更新最近的访问记录
+    const lastRecord = visitRecords.findLast(record => record.domain === domain);
+    if (lastRecord) {
+      lastRecord.duration += duration;
+    }
+
     startTime[tabId] = Date.now();
     await saveData();
   }
 }
 
-// 更新Chrome使用时间
+// 修改更新 Chrome 使用时间的函数
 function updateChromeTime() {
   if (dailyStats.chromeStartTime) {
     const currentTime = Date.now();
     const timeDiff = Math.floor((currentTime - dailyStats.chromeStartTime) / 1000);
-    dailyStats.totalChromeTime += timeDiff;
     dailyStats.chromeStartTime = currentTime;
+    
+    // 累加总时间
+    dailyStats.totalChromeTime += timeDiff;
+    
+    // 确保 Chrome 总时间不小于任何单个网站的时间
+    let maxSiteTime = 0;
+    Object.values(siteData).forEach(site => {
+      maxSiteTime = Math.max(maxSiteTime, site.totalTime / 1000);
+    });
+    
+    dailyStats.totalChromeTime = Math.max(dailyStats.totalChromeTime, maxSiteTime);
   }
 }
 
@@ -185,15 +204,24 @@ setInterval(async () => {
     updateChromeTime();
     
     if (activeTabId) {
-      const tab = await chrome.tabs.get(activeTabId);
-      if (tab && tab.url) {
-        const url = new URL(tab.url);
-        await updateSiteTime(activeTabId, url.hostname);
+      try {
+        const tab = await chrome.tabs.get(activeTabId);
+        if (tab && tab.url) {
+          const url = new URL(tab.url);
+          await updateSiteTime(activeTabId, url.hostname);
+        }
+      } catch (error) {
+        // 标签页不存在，清理相关数据
+        if (error.message.includes('No tab with id')) {
+          delete startTime[activeTabId];
+          activeTabId = null;
+        } else {
+          console.error('Error updating active tab:', error);
+        }
       }
     }
     
     await saveData();
-    notifyPopups();
   } catch (error) {
     console.error('Error in interval update:', error);
   }
@@ -204,13 +232,41 @@ async function saveData() {
   try {
     const dataToSave = {
       savedSiteData: siteData,
-      savedDailyStats: dailyStats
+      savedDailyStats: dailyStats,
+      savedVisitRecords: visitRecords
     };
     
     await chrome.storage.local.set(dataToSave);
-    console.log('Data saved successfully:', dataToSave);  // 调试日志
+    console.log('数据保存成功:', dataToSave);
+    
+    // 尝试通知 popup 更新
+    notifyPopups(dataToSave);
   } catch (error) {
-    console.error('Error saving data:', error);
+    console.error('保存数据失败:', error);
+  }
+}
+
+// 添加单独的通知函数
+async function notifyPopups(data) {
+  try {
+    // 检查是否有活动的 popup
+    const views = await chrome.extension.getViews({ type: 'popup' });
+    if (views && views.length > 0) {
+      await chrome.runtime.sendMessage({
+        type: 'UPDATE_STATS',
+        data: {
+          siteData: data.savedSiteData,
+          dailyStats: data.savedDailyStats,
+          visitRecords: data.savedVisitRecords
+        }
+      });
+    }
+  } catch (error) {
+    // 忽略 popup 未打开时的连接错误
+    if (!error.message.includes('receiving end does not exist') &&
+        !error.message.includes('Could not establish connection')) {
+      console.error('发送更新消息失败:', error);
+    }
   }
 }
 
@@ -253,58 +309,27 @@ async function notifyPopups() {
 // 监听标签页切换
 chrome.tabs.onActivated.addListener(async (activeInfo) => {
   try {
-    // 更新之前活动标签的时间
-    if (activeTabId) {
-      const oldTab = await chrome.tabs.get(activeTabId);
-      if (oldTab && oldTab.url) {
-        const oldUrl = new URL(oldTab.url);
-        await updateSiteTime(activeTabId, oldUrl.hostname);
-      }
-    }
-
-    // 更新新的活动标签
-    activeTabId = activeInfo.tabId;
     const tab = await chrome.tabs.get(activeInfo.tabId);
-    if (tab && tab.url) {
-      const url = new URL(tab.url);
-      const domain = url.hostname;
-      
+    if (tab && tab.url && !tab.url.startsWith('chrome://')) {
+      await addVisitRecord(tab);
+      activeTabId = activeInfo.tabId;
       startTime[activeInfo.tabId] = Date.now();
-      
-      if (!siteData[domain]) {
-        siteData[domain] = {
-          totalTime: 0,
-          visits: 0,
-          title: tab.title,
-          lastVisit: Date.now()
-        };
-      }
-      siteData[domain].visits++;
-      siteData[domain].lastVisit = Date.now();
-      
-      await saveData();
-      notifyPopups();
     }
   } catch (error) {
-    console.error('Error in onActivated:', error);
+    console.error('标签激活处理错误:', error);
   }
 });
 
 // 监听标签页关闭
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   try {
-    const tabs = await chrome.tabs.query({});
-    for (const tab of tabs) {
-      if (startTime[tab.id]) {
-        if (tab.url) {
-          const url = new URL(tab.url);
-          await updateSiteTime(tab.id, url.hostname);
-        }
-      }
-    }
+    // 清理关闭标签页的数据
     delete startTime[tabId];
+    if (activeTabId === tabId) {
+      activeTabId = null;
+    }
+    
     await saveData();
-    notifyPopups();
   } catch (error) {
     console.error('Error in onRemoved:', error);
   }
@@ -312,58 +337,24 @@ chrome.tabs.onRemoved.addListener(async (tabId) => {
 
 // 监听标签页更新
 chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
-  if (changeInfo.status === 'complete' && tab.url) {
-    try {
-      const url = new URL(tab.url);
-      const domain = url.hostname;
-      
-      if (!siteData[domain]) {
-        siteData[domain] = {
-          totalTime: 0,
-          visits: 0,
-          title: tab.title,
-          lastVisit: Date.now()
-        };
-      }
-      
-      // 如果是当前活动标签，更新开始时间
-      const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (activeTab && activeTab.id === tabId) {
-        startTime[tabId] = Date.now();
-      }
-      
-      siteData[domain].visits++;
-      siteData[domain].lastVisit = Date.now();
-      siteData[domain].title = tab.title; // 更新标题
-      
-      await saveData();
-      notifyPopups();
-    } catch (error) {
-      console.error('Error in onUpdated:', error);
+  if (changeInfo.status === 'complete' && tab.url && !tab.url.startsWith('chrome://')) {
+    await addVisitRecord(tab);
+    if (tabId === activeTabId) {
+      startTime[tabId] = Date.now();
     }
   }
 });
 
 // 监听Chrome启动
 chrome.runtime.onStartup.addListener(async () => {
-  console.log('Chrome started');
+  console.log('Chrome 启动');
   await initializeData();
-  dailyStats.chromeOpenCount++;
-  dailyStats.chromeStartTime = Date.now();
-  await saveData();
 });
 
 // 初始扩展
 chrome.runtime.onInstalled.addListener(async (details) => {
-  console.log('Extension installed/updated:', details.reason);
-  if (details.reason === 'install') {
-    await initializeData();
-  } else if (details.reason === 'update') {
-    const recovered = await recoverData();
-    if (!recovered) {
-      await initializeData();
-    }
-  }
+  console.log('扩展安装/更新:', details.reason);
+  await initializeData();
 });
 
 // 添加窗口焦点变化监听器
@@ -472,7 +463,7 @@ async function generateDailySummary() {
       throw new Error('没有可用的浏览数据');
     }
 
-    const prompt = formatBrowsingData(siteData, dailyStats);
+    const prompt = formatBrowsingData(siteData, dailyStats, visitRecords);
     console.log('发送给 AI 的数据:', prompt);
 
     try {
@@ -498,8 +489,8 @@ async function generateDailySummary() {
 }
 
 // 修改数据格式化部分
-function formatBrowsingData(siteData, dailyStats) {
-  let prompt = "请分析以下浏览数据，从工作内容、学习收获、时间管理和健康习惯等方面给出专业建议：\n\n";
+function formatBrowsingData(siteData, dailyStats, visitRecords) {
+  let prompt = "请分析以下网络浏览数据，重点关注数字健康和网络安全：\n\n";
   
   // 添加基础统计
   prompt += "📊 基础统计：\n";
@@ -509,38 +500,86 @@ function formatBrowsingData(siteData, dailyStats) {
   prompt += `• Chrome启动次数：${dailyStats.chromeOpenCount}\n`;
   prompt += `• 总使用时间：${Math.round(dailyStats.totalChromeTime / 60)}分钟\n\n`;
 
-  // 添加详细访问数据
+  // 检查网站安全性
+  const unsafeVisits = visitRecords.filter(record => 
+    checkContentSafety(record.url, record.title)
+  );
+
+  if (unsafeVisits.length > 0) {
+    prompt += "⚠️ 安全提示：\n";
+    prompt += `发现 ${unsafeVisits.length} 次可能的不安全网站访问。\n\n`;
+  }
+
+  // 添加详细访问记录
   prompt += "🔍 详细访问记录：\n";
-  Object.entries(siteData)
-    .sort((a, b) => b[1].totalTime - a[1].totalTime)
-    .forEach(([domain, data]) => {
-      const minutes = Math.round(data.totalTime / 1000 / 60);
-      const lastVisitTime = new Date(data.lastVisit).toLocaleTimeString();
-      prompt += `\n${data.title || domain}\n`;
-      prompt += `• 访问次数：${data.visits}次\n`;
-      prompt += `• 停留时间：${minutes}分钟\n`;
-      prompt += `• 最后访问：${lastVisitTime}\n`;
-      prompt += `• 域名：${domain}\n`;
-    });
-
-  // 添加时间分布分析
-  prompt += "\n⏰ 时间分布分析：\n";
-  const timeDistribution = {
-    morning: 0,   // 5:00-12:00
-    afternoon: 0, // 12:00-18:00
-    evening: 0    // 18:00-次日5:00
-  };
-
-  Object.values(siteData).forEach(data => {
-    const hour = new Date(data.lastVisit).getHours();
-    if (hour >= 5 && hour < 12) timeDistribution.morning++;
-    else if (hour >= 12 && hour < 18) timeDistribution.afternoon++;
-    else timeDistribution.evening++;
+  visitRecords.forEach(record => {
+    const minutes = Math.round(record.duration / 1000 / 60);
+    const time = new Date(record.timestamp).toLocaleTimeString();
+    prompt += `\n${record.title || record.url}\n`;
+    prompt += `• 访问时间：${time}\n`;
+    prompt += `• 停留时间：${minutes}分钟\n`;
+    if (checkContentSafety(record.url, record.title)) {
+      prompt += `• 注意：该网站可能存在安全风险\n`;
+    }
   });
 
-  prompt += `• 上午 (5:00-12:00): ${timeDistribution.morning} 次访问\n`;
-  prompt += `• 下午 (12:00-18:00): ${timeDistribution.afternoon} 次访问\n`;
-  prompt += `• 晚上 (18:00-次日5:00): ${timeDistribution.evening} 次访问\n`;
-
   return prompt;
+}
+
+// 添加获取主域名的函数
+function getMainDomain(url) {
+  try {
+    const hostname = new URL(url).hostname;
+    const parts = hostname.split('.');
+    if (parts.length > 2) {
+      // 处理类似 xxx.baidu.com 的情况
+      return parts.slice(-2).join('.');
+    }
+    return hostname;
+  } catch (error) {
+    console.error('解析域名错误:', error);
+    return url;
+  }
+}
+
+// 修改添加网站数据的函数
+async function addVisitRecord(tab) {
+  if (!tab || !tab.url || tab.url.startsWith('chrome://')) return;
+
+  try {
+    const url = new URL(tab.url);
+    const domain = url.hostname;
+    const timestamp = Date.now();
+
+    // 添加访问记录
+    const record = {
+      id: `visit_${timestamp}`,
+      url: tab.url,
+      title: tab.title || url.toString(),
+      domain: domain,
+      timestamp: timestamp,
+      duration: 0
+    };
+    
+    visitRecords.push(record);
+    console.log('添加新的访问记录:', record);
+
+    // 更新网站数据
+    if (!siteData[domain]) {
+      siteData[domain] = {
+        totalTime: 0,
+        visits: 0,
+        title: tab.title,
+        lastVisit: timestamp
+      };
+    }
+    
+    siteData[domain].visits++;
+    siteData[domain].lastVisit = timestamp;
+    siteData[domain].title = tab.title;
+
+    await saveData();
+  } catch (error) {
+    console.error('添加访问记录失败:', error);
+  }
 }
