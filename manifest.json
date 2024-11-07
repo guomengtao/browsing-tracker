@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "浏览习惯分析助手",
+  "description": "追踪和分析你的网页浏览习惯，提供智能 AI 分析报告",
+  "version": "1.0.0",
+  "author": "guomengtao",
+  "permissions": [
+    "storage",
+    "activeTab",
+    "tabs"
+  ],
+  "host_permissions": [
+    "https://open.bigmodel.cn/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_popup": "popup.html"
+  }
+} 

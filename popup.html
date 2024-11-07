@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <style>
+    body {
+      width: 400px;
+      padding: 10px;
+    }
+    .summary {
+      margin: 10px 0;
+      padding: 10px;
+      border: 1px solid #ccc;
+    }
+    .stats {
+      background: #f5f5f5;
+      padding: 10px;
+      margin: 10px 0;
+      border-radius: 4px;
+    }
+    .site-list {
+      margin: 10px 0;
+    }
+    .site-item {
+      display: flex;
+      justify-content: space-between;
+      padding: 5px 0;
+      border-bottom: 1px solid #eee;
+    }
+    .site-info {
+      flex-grow: 1;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .site-stats {
+      color: #666;
+      font-size: 0.9em;
+      margin-left: 10px;
+    }
+    .recent-visit {
+      background-color: #e8f0fe;
+      animation: fadeBackground 2s ease-out;
+    }
+    .sort-controls {
+      display: flex;
+      gap: 10px;
+      margin: 10px 0;
+    }
+    .sort-button {
+      padding: 5px 10px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      background: #fff;
+      cursor: pointer;
+    }
+    .sort-button.active {
+      background: #4285f4;
+      color: white;
+      border-color: #4285f4;
+    }
+    .list-title {
+      font-weight: bold;
+      margin: 15px 0 10px 0;
+      padding-bottom: 5px;
+      border-bottom: 2px solid #4285f4;
+    }
+    @keyframes fadeBackground {
+      from { background-color: #c2e0ff; }
+      to { background-color: #e8f0fe; }
+    }
+    .summary-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 10px;
+    }
+    
+    .refresh-button {
+      padding: 3px 8px;
+      font-size: 0.9em;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      background: #fff;
+      cursor: pointer;
+    }
+    
+    .refresh-button:hover {
+      background: #f5f5f5;
+    }
+    
+    .summary-content {
+      white-space: pre-line;
+      line-height: 1.4;
+    }
+    
+    .action-button {
+      display: block;
+      width: 100%;
+      padding: 8px;
+      margin: 10px 0;
+      background: #4285f4;
+      color: white;
+      border: none;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    
+    .action-button:hover {
+      background: #3367d6;
+    }
+    
+    .action-button:active {
+      background: #2850a7;
+    }
+    
+    .copy-success {
+      animation: fadeOut 2s ease-in;
+    }
+    
+    @keyframes fadeOut {
+      from { background: #4caf50; }
+      to { background: #4285f4; }
+    }
+  </style>
+</head>
+<body>
+  <h2>今日网站使用总结</h2>
+  <div class="stats">
+    <div>今日访问网站数：<span id="uniqueSites">0</span></div>
+    <div>总访问次数：<span id="totalVisits">0</span></div>
+    <div>Chrome启动次数：<span id="chromeOpenCount">0</span></div>
+    <div>Chrome总使用时间：<span id="totalChromeTime">0分钟</span></div>
+  </div>
+  
+  <div class="list-title">最近访问</div>
+  <div class="site-list" id="recentList">
+    <!-- 最近访问的网站列表 -->
+  </div>
+
+  <div class="list-title">所有访问记录</div>
+  <div class="sort-controls">
+    <button class="sort-button active" data-sort="time">按访问时间</button>
+    <button class="sort-button" data-sort="duration">按停留时长</button>
+    <button class="sort-button" data-sort="visits">按访问次数</button>
+  </div>
+  <div class="site-list" id="fullList">
+    <!-- 完整的网站列表 -->
+  </div>
+
+  <div class="list-title">数据导出</div>
+  <button id="copyData" class="action-button">
+    复制今日浏览数据
+  </button>
+
+  <div class="list-title">AI 总结</div>
+  <div class="summary-container">
+    <div id="summary-status" class="summary-status"></div>
+    <div id="ai-summary" class="summary-content"></div>
+    <button id="generateSummary" class="action-button">生成 AI 总结</button>
+  </div>
+
+  <style>
+    .summary-container {
+      margin: 15px 0;
+      padding: 10px;
+      background: #f8f9fa;
+      border-radius: 4px;
+    }
+
+    .summary-status {
+      color: #666;
+      font-size: 0.9em;
+      margin-bottom: 10px;
+    }
+
+    .summary-content {
+      white-space: pre-line;
+      line-height: 1.5;
+      margin: 10px 0;
+      padding: 10px;
+      background: white;
+      border-radius: 4px;
+      border: 1px solid #eee;
+      min-height: 50px;
+    }
+
+    #generateSummary {
+      margin-top: 10px;
+    }
+
+    #generateSummary:disabled {
+      background: #ccc;
+      cursor: not-allowed;
+    }
+  </style>
+
+  <script src="popup.js"></script>
+</body>
+</html> 

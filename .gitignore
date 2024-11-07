@@ -1,0 +1,9 @@
+# 忽略配置文件
+src/config.js
+
+# 其他忽略项
+.DS_Store
+node_modules/
+*.pem
+*.key
+.env 
