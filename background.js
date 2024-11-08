@@ -99,7 +99,7 @@ async function analyzeWithAI(data) {
   }
 }
 
-// 保存数据到 storage
+// 修改保存数据函数
 async function saveData(newSiteData, newVisitRecords, newDailyStats) {
   try {
     // 更新内存中的数据
@@ -107,19 +107,72 @@ async function saveData(newSiteData, newVisitRecords, newDailyStats) {
     if (newVisitRecords) visitRecords = newVisitRecords;
     if (newDailyStats) dailyStats = newDailyStats;
 
-    // 保存数据到 storage
-    const data = {
+    // 获取当前日期
+    const today = new Date().toDateString();
+    
+    // 获取历史数据
+    const { history = [] } = await chrome.storage.local.get('history');
+    console.log('获取到的历史数据:', history);
+    
+    // 保存当前数据
+    const currentData = {
       savedSiteData: siteData,
       savedVisitRecords: visitRecords,
       savedDailyStats: dailyStats,
       lastSaveTime: Date.now()
     };
 
-    await chrome.storage.local.set(data);
-    console.log('数据已保存:', data);
+    // 创建今天的数据记录
+    const todayData = {
+      date: today,
+      stats: { ...dailyStats },
+      sites: { ...siteData },
+      visitRecords: [...visitRecords],
+      aiSummary: dailyStats.aiSummary ? {
+        content: dailyStats.aiSummary,
+        generateTime: dailyStats.summaryGeneratedTime
+      } : null
+    };
+
+    // 更新或添加今天的数据到历史记录
+    const todayIndex = history.findIndex(item => item.date === today);
+    if (todayIndex >= 0) {
+      history[todayIndex] = todayData;
+    } else {
+      history.push(todayData);
+    }
+
+    // 按日期排序
+    history.sort((a, b) => new Date(b.date) - new Date(a.date));
+
+    // 保留最近30天的历史
+    const recentHistory = history.slice(0, 30);
+
+    // 一次性保存所有数据
+    await chrome.storage.local.set({
+      ...currentData,
+      history: recentHistory
+    });
+
+    console.log('保存的数据:', {
+      currentData,
+      historyLength: recentHistory.length,
+      latestHistoryDate: recentHistory[0]?.date
+    });
   } catch (error) {
     console.error('保存数据失败:', error);
     throw error;
+  }
+}
+
+// 添加获取历史数据的函数
+async function getHistoryData(date) {
+  try {
+    const { history = [] } = await chrome.storage.local.get('history');
+    return history.find(item => item.date === date) || null;
+  } catch (error) {
+    console.error('获取历史数据失败:', error);
+    return null;
   }
 }
 
@@ -189,7 +242,7 @@ async function loadData() {
   }
 }
 
-// 初始化数据
+// 修改初始化数据函数
 async function initializeData() {
   try {
     console.log('开始初始化数据...');
@@ -198,15 +251,15 @@ async function initializeData() {
     const today = new Date().toDateString();
     
     // 从 storage 加载数据
-    const { savedSiteData, savedVisitRecords, savedDailyStats, lastSaveTime } = 
-      await chrome.storage.local.get(['savedSiteData', 'savedVisitRecords', 'savedDailyStats', 'lastSaveTime']);
+    const { savedSiteData, savedVisitRecords, savedDailyStats } = 
+      await chrome.storage.local.get(['savedSiteData', 'savedVisitRecords', 'savedDailyStats']);
     
     // 检查是否是新的一天
-    const lastSaveDay = lastSaveTime ? new Date(lastSaveTime).toDateString() : null;
+    const lastSaveDay = savedDailyStats?.date || null;
     
     if (today !== lastSaveDay) {
       console.log('新的一天，重置数据');
-      // 新的一天，重置数据
+      // 重置今天的数据
       siteData = {};
       visitRecords = [];
       dailyStats = {
@@ -323,6 +376,15 @@ async function updateSiteTime(tabId, domain) {
     // 更新网站数据
     if (siteData[domain]) {
       siteData[domain].totalTime += duration;
+      siteData[domain].lastVisit = Date.now();
+    } else {
+      const tab = await chrome.tabs.get(tabId);
+      siteData[domain] = {
+        totalTime: duration,
+        visits: 1,
+        title: tab.title,
+        lastVisit: Date.now()
+      };
     }
 
     // 更新最近的访问记录
@@ -332,7 +394,7 @@ async function updateSiteTime(tabId, domain) {
     }
 
     startTime[tabId] = Date.now();
-    await saveData();
+    await saveData(siteData, visitRecords, dailyStats);
   }
 }
 
@@ -369,7 +431,7 @@ setInterval(async () => {
           await updateSiteTime(activeTabId, url.hostname);
         }
       } catch (error) {
-        // 标签��不存在，清理相关���据
+        // 标签不存在，清理相关数据
         if (error.message.includes('No tab with id')) {
           delete startTime[activeTabId];
           activeTabId = null;
@@ -796,7 +858,7 @@ async function addVisitRecord(tab) {
     siteData[domain].lastVisit = timestamp;
     siteData[domain].title = tab.title;
 
-    // 使用新的 saveData 函数保存数据
+    // 保存更新后的数据
     await saveData(siteData, visitRecords, dailyStats);
     
     console.log('添加新的访问记录:', record);
